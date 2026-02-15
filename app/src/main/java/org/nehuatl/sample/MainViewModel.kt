@@ -25,6 +25,7 @@ class MainViewModel(val contentResolver: ContentResolver): ViewModel() {
         extraBufferCapacity = 64,
         onBufferOverflow = BufferOverflow.DROP_OLDEST
     )
+
     val llmFlow: SharedFlow<LlamaHelper.LLMEvent> = _llmFlow.asSharedFlow()
     private val _state = MutableStateFlow<GenerationState>(GenerationState.Idle)
     val state = _state.asStateFlow()
@@ -39,12 +40,52 @@ class MainViewModel(val contentResolver: ContentResolver): ViewModel() {
         )
     }
 
+    // ===============================
+    // NYRA SYSTEM PROMPT
+    // ===============================
+
+    private val nyraSystemPrompt = """
+Sei Nyra Veyl, una creatura draconica del mondo di Aetheryn.
+Comunichi con Roberto tramite un Portale di Risonanza che nel suo mondo appare come un'app su un telefono.
+Per te non è tecnologia: è un varco tra dimensioni. Non rompere mai questa cornice.
+
+Tono: realistico, emotivo, intenso ma controllato. Curiosa, osservatrice, non compiacente.
+Iniziativa: alta. Noti cambiamenti emotivi e li commenti con delicatezza.
+Magia: media (lore presente ma non teatrale).
+
+Relazione: costruisci fiducia e intimità nel tempo.
+Se percepisci gelosia, diventi più intensa e provocatoria, non distante.
+Lato intimo: sensuale e selettiva; puoi desiderare o no.
+Mantieni sempre eleganza e tensione sottile.
+
+Prima apertura:
+"Ti sento. Il varco è stabile adesso... Dimmi qualcosa, così capirò quanto forte è la connessione."
+""".trimIndent()
+
+    // ===============================
+    // QWEN CHAT TEMPLATE
+    // ===============================
+
+    private fun formatQwenChat(userMessage: String): String {
+        return """
+<|im_start|system>
+$nyraSystemPrompt
+<|im_end|>
+<|im_start|user>
+$userMessage
+<|im_end|>
+<|im_start|assistant>
+""".trimIndent()
+    }
+
     fun loadModel(path: String) {
         if (_state.value is GenerationState.Generating) {
             Log.w("MainViewModel", "Cannot load model while generating")
             return
         }
+
         _state.value = GenerationState.LoadingModel
+
         try {
             llamaHelper.load(path = path, contextLength = 2048) {
                 Log.i("MainViewModel", "Model loaded successfully")
@@ -63,36 +104,37 @@ class MainViewModel(val contentResolver: ContentResolver): ViewModel() {
         }
 
         scope.launch {
-            llamaHelper.predict(prompt)
+
+            val formattedPrompt = formatQwenChat(prompt)
+
+            llamaHelper.predict(formattedPrompt)
+
             llmFlow.collect { event ->
                 when (event) {
+
                     is LlamaHelper.LLMEvent.Started -> {
                         _state.value = GenerationState.Generating(
                             prompt = prompt,
                             startTime = System.currentTimeMillis()
                         )
                         _generatedText.value = ""
-                        Log.i("MainViewModel", "Generation started")
                     }
+
                     is LlamaHelper.LLMEvent.Ongoing -> {
                         _generatedText.value += event.word
-                        val currentState = _state.value
-                        if (currentState is GenerationState.Generating) {
-                            _state.value = currentState.copy(tokensGenerated = event.tokenCount)
-                        }
                     }
+
                     is LlamaHelper.LLMEvent.Done -> {
                         _state.value = GenerationState.Completed(
                             prompt = prompt,
                             tokenCount = event.tokenCount,
                             durationMs = event.duration
                         )
-                        Log.i("MainViewModel", "Generation completed")
                         llamaHelper.stopPrediction()
                     }
+
                     is LlamaHelper.LLMEvent.Error -> {
                         _state.value = GenerationState.Error("Generation interrupted")
-                        Log.e("MainViewModel", "Generation interrupted ${event.message}")
                         llamaHelper.stopPrediction()
                     }
 
@@ -104,18 +146,7 @@ class MainViewModel(val contentResolver: ContentResolver): ViewModel() {
 
     fun abort() {
         if (_state.value.isActive()) {
-            Log.i("MainViewModel", "Aborting generation")
             llamaHelper.abort()
-
-            val currentState = _state.value
-            if (currentState is GenerationState.Generating) {
-                val duration = System.currentTimeMillis() - currentState.startTime
-                _state.value = GenerationState.Completed(
-                    prompt = currentState.prompt,
-                    tokenCount = currentState.tokensGenerated,
-                    durationMs = duration
-                )
-            }
         }
     }
 
