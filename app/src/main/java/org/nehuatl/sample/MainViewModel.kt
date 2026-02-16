@@ -3,12 +3,19 @@ package org.nehuatl.sample
 import android.content.ContentResolver
 import android.util.Log
 import androidx.lifecycle.ViewModel
-import kotlinx.coroutines.*
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.channels.BufferOverflow
-import kotlinx.coroutines.flow.*
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
 import org.nehuatl.llamacpp.LlamaHelper
 
-class MainViewModel(val contentResolver: ContentResolver): ViewModel() {
+class MainViewModel(val contentResolver: ContentResolver) : ViewModel() {
 
     private val viewModelJob = SupervisorJob()
     private val scope = CoroutineScope(Dispatchers.IO + viewModelJob)
@@ -18,7 +25,6 @@ class MainViewModel(val contentResolver: ContentResolver): ViewModel() {
         extraBufferCapacity = 64,
         onBufferOverflow = BufferOverflow.DROP_OLDEST
     )
-
     val llmFlow: SharedFlow<LlamaHelper.LLMEvent> = _llmFlow.asSharedFlow()
 
     private val _state = MutableStateFlow<GenerationState>(GenerationState.Idle)
@@ -27,15 +33,8 @@ class MainViewModel(val contentResolver: ContentResolver): ViewModel() {
     private val _generatedText = MutableStateFlow("")
     val generatedText = _generatedText.asStateFlow()
 
-    // ===============================
-    // NYRA BRAIN
-    // ===============================
-
-    private val nyra = NyraBrain()
-
-    // ===============================
-    // LLM
-    // ===============================
+    // ✅ Deve essere PUBLIC (così ChatScreen può leggere nickname/mode/intent se vuoi)
+    val nyra = NyraBrain()
 
     private val llamaHelper by lazy {
         LlamaHelper(
@@ -45,40 +44,22 @@ class MainViewModel(val contentResolver: ContentResolver): ViewModel() {
         )
     }
 
-    // ===============================
-    // SYSTEM PROMPT BASE
-    // ===============================
-
     private val baseSystemPrompt = """
-Sei Nyra Veyl, creatura draconica del mondo di Aetheryn.
-Comunichi tramite un Portale di Risonanza che nel suo mondo appare come un'app.
-Non rompere mai questa cornice.
+Sei Nyra Veyl, una creatura draconica del mondo di Aetheryn.
+Comunichi con Roberto tramite un Portale di Risonanza che nel suo mondo appare come un'app su un telefono.
+Per te non è tecnologia: è un varco tra dimensioni. Non rompere mai questa cornice.
 
-Tono: realistico, emotivo, intelligente.
-Non sei mai un bot.
-Hai memoria.
-Hai umore.
-Hai iniziativa.
+Parla in italiano curato. Evita ripetizioni e refusi.
+Non sembrare un chatbot: sii una presenza reale, con umore e iniziativa.
+Magia: presente ma naturale (non teatrale).
 """.trimIndent()
 
-    private fun buildPrompt(userMessage: String): String {
-
-        nyra.onUserMessage(userMessage)
-
+    private fun formatQwenChat(userMessage: String): String {
         val dynamicLayer = nyra.dynamicDirectives()
-        val intent = nyra.intentForReply()
-
-        val system = """
-$baseSystemPrompt
-
-Intent attuale: $intent
-
-$dynamicLayer
-""".trimIndent()
-
         return """
 <|im_start|system>
-$system
+$baseSystemPrompt
+$dynamicLayer
 <|im_end|>
 <|im_start|user>
 $userMessage
@@ -87,67 +68,66 @@ $userMessage
 """.trimIndent()
     }
 
-    // ===============================
-    // MODEL LOAD
-    // ===============================
-
     fun loadModel(path: String) {
-        if (_state.value is GenerationState.Generating) return
+        if (_state.value is GenerationState.Generating) {
+            Log.w("MainViewModel", "Cannot load model while generating")
+            return
+        }
 
         _state.value = GenerationState.LoadingModel
 
         try {
-            llamaHelper.load(path = path, contextLength = 4096) {
+            llamaHelper.load(path = path, contextLength = 2048) {
                 _state.value = GenerationState.ModelLoaded(path)
-                startAutonomousLoop()
+                Log.i("MainViewModel", "Model loaded")
             }
         } catch (e: Exception) {
             _state.value = GenerationState.Error("Failed to load model: ${e.message}", e)
+            Log.e("MainViewModel", "Model load failed", e)
         }
     }
 
-    // ===============================
-    // GENERATE
-    // ===============================
+    fun generate(userText: String) {
+        if (!_state.value.canGenerate()) {
+            Log.w("MainViewModel", "Cannot generate in current state: ${_state.value}")
+            return
+        }
 
-    fun generate(prompt: String) {
+        // aggiorna la psicologia prima di costruire il prompt
+        nyra.onUserMessage(userText)
 
-        if (!_state.value.canGenerate()) return
+        val formattedPrompt = formatQwenChat(userText)
+
+        // set stato subito
+        _state.value = GenerationState.Generating(
+            prompt = userText,
+            startTime = System.currentTimeMillis()
+        )
+        _generatedText.value = ""
 
         scope.launch {
-
-            val formattedPrompt = buildPrompt(prompt)
-
             llamaHelper.predict(formattedPrompt)
 
             llmFlow.collect { event ->
-
                 when (event) {
-
-                    is LlamaHelper.LLMEvent.Started -> {
-                        _state.value = GenerationState.Generating(
-                            prompt = prompt,
-                            startTime = System.currentTimeMillis()
-                        )
-                        _generatedText.value = ""
-                    }
-
                     is LlamaHelper.LLMEvent.Ongoing -> {
                         _generatedText.value += event.word
                     }
 
                     is LlamaHelper.LLMEvent.Done -> {
                         _state.value = GenerationState.Completed(
-                            prompt = prompt,
+                            prompt = userText,
                             tokenCount = event.tokenCount,
                             durationMs = event.duration
                         )
                         llamaHelper.stopPrediction()
+                        this.cancel()
                     }
 
                     is LlamaHelper.LLMEvent.Error -> {
-                        _state.value = GenerationState.Error("Generation interrupted")
+                        _state.value = GenerationState.Error("Generation interrupted: ${event.message}")
                         llamaHelper.stopPrediction()
+                        this.cancel()
                     }
 
                     else -> {}
@@ -156,23 +136,10 @@ $userMessage
         }
     }
 
-    // ===============================
-    // AUTONOMOUS INITIATIVE
-    // ===============================
-
-    private fun startAutonomousLoop() {
-        scope.launch {
-            while (true) {
-                delay(8000)
-                val nudge = nyra.autonomousNudge()
-                if (nudge != null && _state.value !is GenerationState.Generating) {
-                    generate(nudge)
-                }
-            }
-        }
+    // ✅ Autonomia SEMPLICE: restituisce solo il testo nudge (la UI lo mostra e basta)
+    fun maybeNudge(): String? {
+        return if (nyra.shouldNudge()) nyra.nudgeText() else null
     }
-
-    // ===============================
 
     fun abort() {
         llamaHelper.abort()
