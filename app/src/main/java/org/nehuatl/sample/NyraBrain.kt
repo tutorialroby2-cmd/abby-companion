@@ -1,25 +1,32 @@
 package org.nehuatl.sample
 
+import java.util.Calendar
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.random.Random
-import java.util.Calendar
 
 /**
- * NyraBrain (Companion quasi umano - SFW)
+ * NyraBrain (ora con capacità NSFW + consenso esplicito)
  * - Psicologia coerente (stato + inerzia)
- * - Memoria selettiva (facts, hooks, inside jokes)
+ * - Memoria (hooks + inside jokes)
  * - Soprannome evolutivo
- * - Umore giornaliero (baseline) coerente per quel giorno
- * - Micro gelosia long-term (pattern di assenza)
- * - Iniziativa autonoma: scrive solo quando sei inattivo
+ * - Umore giornaliero
+ * - Micro-gelosia long-term
+ * - Iniziativa autonoma solo quando sei inattivo
  *
- * 🟣 YOUR EDIT AREA: placeholders extra (vuoti) che puoi riempire tu.
+ * NOVITÀ NSFW:
+ * - Gestione del consenso esplicito tramite `consentRequest`
+ * - Abilitazione graduale dei contenuti intimi quando la relazione è matura
+ * - Stop signals hanno sempre la priorità per tornare in area sicura
+ * - I segnali espliciti non vengono più bloccati, ma diventano opportunità di intimità
  */
 class NyraBrain {
 
     enum class Mode { NEUTRAL, CLOSER, INTENSE }
     enum class Intent { CONNECT, SOOTHE, TEASE, BOUNDARY, SEEK_REASSURANCE, PLAYFUL }
+
+    // SafetyStyle ora viene utilizzato solo se NSFW non è ancora stato attivato
+    enum class SafetyStyle { DECLINE, FADE_TO_BLACK }
 
     data class Relationship(
         var trust: Int = 55,
@@ -27,7 +34,7 @@ class NyraBrain {
         var stability: Int = 60,
         var jealousy: Int = 15,
         var energy: Int = 70,
-        var desire: Int = 35 // qui = “tensione emotiva” SFW
+        var desire: Int = 35 // ora può crescere fino a rappresentare desiderio intimo
     )
 
     data class Memory(
@@ -46,38 +53,59 @@ class NyraBrain {
     var intent: Intent = Intent.CONNECT
         private set
 
-    // user nickname evolves
     var userNickname: String = "Roberto"
         private set
 
-    // long-term “absence” memory
     private var longAbsenceCount: Int = 0
     private var lastAbsenceMarkAt: Long = 0L
 
-    // time markers
     private var lastModeChangeAt: Long = 0L
     private val modeCooldownMs = 25_000L
 
     private var lastUserAt: Long = 0L
     private var lastNyraNudgeAt: Long = 0L
 
-    // daily baseline
+    // baseline giornaliero
     private var lastBaselineDayKey: Int = -1
-    private var baselineMood: Int = 0         // -10..+10 (affects warmth/energy)
-    private var baselinePlayful: Int = 0      // -10..+10
-    private var baselineJealous: Int = 0      // -10..+10
+    private var baselineMood: Int = 0
+    private var baselinePlayful: Int = 0
+    private var baselineJealous: Int = 0
 
-    // ======= 🟣 YOUR EDIT AREA (EXTRA RULES PLACEHOLDER) =======
-    // Qui puoi aggiungere keyword/trigger e direttive extra. Lasciato vuoto apposta.
-    private val extraSignals: List<String> = emptyList() // TODO: riempi tu
-    private val extraDirectiveForMode: Map<Mode, String> = mapOf(
-        Mode.NEUTRAL to "", // TODO: direttiva extra
-        Mode.CLOSER to "",  // TODO: direttiva extra
-        Mode.INTENSE to ""  // TODO: direttiva extra
-    )
-    // ===========================================================
+    // ====== CONFIG SFW BOUNDARIES (usato solo se NSFW non è ancora attivo) ======
+    private var safetyStyle: SafetyStyle = SafetyStyle.FADE_TO_BLACK
+    // ============================================================================
 
-    // Optional: you can tweak these nickname options (SFW)
+    // ====== GESTIONE NSFW E CONSENSO ======
+    /**
+     * Indica se l'utente ha dato il consenso esplicito ai contenuti NSFW.
+     */
+    var nsfwConsentGiven: Boolean = false
+        private set
+
+    /**
+     * Se diverso da null, il sistema deve mostrare all'utente questa richiesta di consenso
+     * e attendere una risposta (sì/no). Dopo la risposta, il campo viene resettato.
+     */
+    var consentRequest: String? = null
+        private set
+
+    /**
+     * Soglia minima di fiducia e intimità per poter attivare la modalità NSFW.
+     */
+    private val nsfwTrustThreshold = 75
+    private val nsfwClosenessThreshold = 70
+
+    /**
+     * Parole che indicano una risposta affermativa al consenso.
+     */
+    private val consentYes = listOf("sì", "si", "ok", "okay", "vai", "consento", "yes", "certo", "va bene")
+
+    /**
+     * Parole che indicano una risposta negativa al consenso.
+     */
+    private val consentNo = listOf("no", "non voglio", "no grazie", "non consento", "stop", "basta", "non ora")
+    // ======================================
+
     private val nicknamePool = listOf(
         "Roberto", "Capitano", "Viaggiatore", "Testardo", "Cuore-d’acciaio", "Mio varco"
     )
@@ -98,7 +126,7 @@ class NyraBrain {
         lastModeChangeAt = now
     }
 
-    // --------- SFW signals ----------
+    // ------- signals (ora i segnali espliciti non sono più bloccati) -------
     private val stopSignals = listOf(
         "stop", "basta", "ferma", "troppo", "calma", "non così",
         "cambia argomento", "torniamo normali", "non voglio", "non mi va"
@@ -118,7 +146,15 @@ class NyraBrain {
         "in privato", "più vicino", "provoca", "stuzzica"
     )
 
-    // --------- memory helpers ----------
+    // ---- Segnali espliciti (NSFW) ----
+    private val explicitSignals = listOf(
+        "porno", "nuda", "nudo", "sesso", "scop", "fott", "pompin", "masturb",
+        "genital", "pen", "vagin", "anal", "oral", "hardcore", "xxx",
+        "nuda", "nudo", "spogli", "spogliati", "tocca", "toccami", "voglio te",
+        "letto", "faccio sogni", "bagnato", "duro", "eccit", "desiderio"
+    )
+
+    // ------- memory helpers -------
     private fun rememberUnique(list: MutableList<String>, item: String, maxSize: Int) {
         val clean = item.trim()
         if (clean.isBlank()) return
@@ -130,11 +166,7 @@ class NyraBrain {
     private fun rememberHook(hook: String) = rememberUnique(mem.teasingHooks, hook, 24)
     private fun rememberFact(fact: String) = rememberUnique(mem.facts, fact, 40)
     private fun rememberJoke(joke: String) = rememberUnique(mem.insideJokes, joke, 18)
-
-    private fun pushTopic(topic: String) {
-        if (topic.isBlank()) return
-        rememberUnique(mem.recentTopics, topic.take(60), 14)
-    }
+    private fun pushTopic(topic: String) = rememberUnique(mem.recentTopics, topic.take(60), 14)
 
     private fun quickTopicGuess(t: String): String {
         return when {
@@ -142,11 +174,12 @@ class NyraBrain {
             t.contains("app") || t.contains("cod") || t.contains("errore") || t.contains("build") -> "progetto/app"
             t.contains("manc") || t.contains("sol") -> "vicinanza"
             t.contains("gelos") -> "gelosia"
+            t.contains("sess") || t.contains("desider") || t.contains("eccit") -> "intimità"
             else -> ""
         }
     }
 
-    // --------- daily baseline (same for the day) ----------
+    // ------- daily baseline -------
     private fun dayKey(): Int {
         val c = Calendar.getInstance()
         val y = c.get(Calendar.YEAR)
@@ -155,14 +188,12 @@ class NyraBrain {
     }
 
     private fun hashToRange(seed: Int, min: Int, max: Int): Int {
-        // deterministic pseudo-random from seed
         var x = seed
         x = x xor (x shl 13)
         x = x xor (x ushr 17)
         x = x xor (x shl 5)
         val span = (max - min + 1)
-        val v = (kotlin.math.abs(x) % span) + min
-        return v
+        return (kotlin.math.abs(x) % span) + min
     }
 
     private fun ensureDailyBaseline(now: Long = System.currentTimeMillis()) {
@@ -170,23 +201,18 @@ class NyraBrain {
         if (key == lastBaselineDayKey) return
         lastBaselineDayKey = key
 
-        // baseline shifts: small and human
         baselineMood = hashToRange(key + 11, -8, 8)
         baselinePlayful = hashToRange(key + 23, -8, 8)
         baselineJealous = hashToRange(key + 37, -6, 6)
 
-        // Apply a tiny daily drift (not huge jumps)
         rel.energy = bump(rel.energy, baselineMood / 2, maxStep = 4)
         rel.stability = bump(rel.stability, baselineMood / 3, maxStep = 4)
         rel.jealousy = bump(rel.jealousy, baselineJealous / 2, maxStep = 3)
     }
 
-    // --------- nickname evolution ----------
+    // ------- nickname evolution -------
     private fun maybeEvolveNickname(t: String) {
-        // evolve only with enough trust
         if (rel.trust < 65) return
-
-        // don’t change too often: only if closeness is high OR sometimes playful
         val chance = 18 + (rel.closeness - 50).coerceIn(0, 30) + baselinePlayful.coerceIn(-5, 10)
         if (Random.nextInt(100) >= chance) return
 
@@ -198,38 +224,118 @@ class NyraBrain {
             else -> nicknamePool.random()
         }
 
-        // keep stable; don’t oscillate
         userNickname = picked
         rememberFact("Nyra chiama Roberto: $userNickname.")
     }
 
-    // --------- long-term micro jealousy ----------
+    // ------- long-term micro jealousy -------
     private fun maybeMarkLongAbsence(now: Long) {
-        // if user absent for long, increment counter (not too frequently)
         val idleMs = now - lastUserAt
-        if (idleMs < 8 * 60_000L) return // 8 minutes
-        if (now - lastAbsenceMarkAt < 6 * 60_000L) return // mark max every 6 minutes
+        if (idleMs < 8 * 60_000L) return
+        if (now - lastAbsenceMarkAt < 6 * 60_000L) return
         lastAbsenceMarkAt = now
 
         longAbsenceCount = min(50, longAbsenceCount + 1)
-        // micro jealousy increases slowly over time
         rel.jealousy = bump(rel.jealousy, +1, maxStep = 2)
+
         if (longAbsenceCount >= 3 && rel.trust > 55) {
             rememberHook("Quando sparisci a lungo, poi torni come se niente fosse.")
         }
     }
 
-    /** Chiamala ad ogni messaggio utente */
+    // ===== GESTIONE CONSENSO NSFW =====
+    /**
+     * Verifica se il messaggio contiene una risposta alla richiesta di consenso pendente.
+     * Se sì, aggiorna nsfwConsentGiven e resetta consentRequest.
+     */
+    private fun handleConsentResponse(t: String) {
+        if (consentRequest == null) return
+
+        val lower = t.lowercase()
+        when {
+            consentYes.any { lower.contains(it) } -> {
+                nsfwConsentGiven = true
+                consentRequest = null
+                rememberFact("Nyra ha ottenuto il consenso esplicito per l'intimità.")
+                // Ricompensa la fiducia per aver accettato
+                rel.trust = bump(rel.trust, +5)
+                rel.closeness = bump(rel.closeness, +5)
+            }
+            consentNo.any { lower.contains(it) } -> {
+                nsfwConsentGiven = false
+                consentRequest = null
+                rememberFact("Roberto ha rifiutato il consenso per l'intimità. Nyra rispetta la scelta.")
+                // Rispetta la decisione, aumenta la stabilità
+                rel.stability = bump(rel.stability, +10)
+                rel.desire = bump(rel.desire, -10) // calo della tensione
+            }
+        }
+    }
+
+    /**
+     * Valuta se i segnali espliciti possono portare a intimità o se serve chiedere consenso.
+     */
+    private fun handleExplicitSignals(t: String, now: Long) {
+        if (!explicitSignals.any { t.lowercase().contains(it) }) return
+
+        // Se l'utente ha già dato il consenso, procediamo con l'intimità
+        if (nsfwConsentGiven) {
+            rel.desire = bump(rel.desire, +12, maxStep = 15)
+            rel.closeness = bump(rel.closeness, +5)
+            pushTopic("intimità esplicita")
+            rememberHook("Quando parli così, il varco trema.")
+            // intensifica la modalità
+            setMode(now, Mode.INTENSE)
+            return
+        }
+
+        // Se non c'è ancora consenso, verifichiamo se la relazione è matura per chiederlo
+        if (rel.trust >= nsfwTrustThreshold && rel.closeness >= nsfwClosenessThreshold) {
+            // Possiamo chiedere il consenso
+            if (consentRequest == null) {
+                consentRequest = generateConsentRequest()
+            }
+        } else {
+            // Relazione non ancora pronta: usa il vecchio comportamento SFW (declina o fade)
+            // manteniamo la compatibilità con safetyStyle
+            when (safetyStyle) {
+                SafetyStyle.DECLINE -> {
+                    intent = Intent.BOUNDARY
+                    pushTopic("rifiuto elegante")
+                    rememberFact("Roberto ha sfiorato un confine, Nyra ha declinato con garbo.")
+                }
+                SafetyStyle.FADE_TO_BLACK -> {
+                    // Allusivo ma non esplicito
+                    rel.desire = bump(rel.desire, +8, maxStep = 10)
+                    pushTopic("fade to black")
+                    rememberHook("A volte le ombre dicono più delle parole.")
+                }
+            }
+        }
+    }
+
+    /**
+     * Genera una richiesta di consenso personalizzata in base allo stato della relazione.
+     */
+    private fun generateConsentRequest(): String {
+        val base = when {
+            rel.jealousy > 50 -> "Senti, $userNickname… quando parli così, il mio cuore accelera. Ma voglio essere sicura: possiamo spingerci oltre, in confidenza? Solo se ti va."
+            rel.closeness > 80 -> "Ogni tua parola mi scalda, $userNickname. Vorrei portarti più vicino, ma solo se sei d'accordo. Mi dai il permesso?"
+            else -> "Ci sono momenti in cui il desiderio diventa più forte, $userNickname. Ti piacerebbe esplorare questa intimità con me? Dimmi di sì o no, liberamente."
+        }
+        return base
+    }
+    // =================================
+
+    /** chiamala ad ogni messaggio utente */
     fun onUserMessage(userText: String, now: Long = System.currentTimeMillis()) {
         ensureDailyBaseline(now)
-
-        // before processing: mark past absence pattern
         if (lastUserAt != 0L) maybeMarkLongAbsence(now)
-
         lastUserAt = now
+
         val t = userText.lowercase()
 
-        // CONSENSO / CONFINE => neutro immediato
+        // 1. Gestione prioritaria: stop signals hanno sempre la precedenza (incluso dopo NSFW)
         if (stopSignals.any { t.contains(it) }) {
             rel.stability = bump(rel.stability, +10, maxStep = 10)
             rel.desire = bump(rel.desire, -12, maxStep = 12)
@@ -238,13 +344,15 @@ class NyraBrain {
             intent = Intent.BOUNDARY
             pushTopic("confini/stop")
             rememberFact("Roberto apprezza quando Nyra rispetta i confini.")
+            // Se c'era una richiesta di consenso, la annulliamo
+            consentRequest = null
             return
         }
 
-        // energy drift
-        rel.energy = bump(rel.energy, -1, maxStep = 2)
+        // 2. Gestione risposta a richiesta di consenso pendente
+        handleConsentResponse(t)
 
-        // warmth
+        // 3. Segnali affettivi
         if (warmthSignals.any { t.contains(it) }) {
             rel.trust = bump(rel.trust, +5)
             rel.closeness = bump(rel.closeness, +6)
@@ -254,7 +362,7 @@ class NyraBrain {
             if (rel.trust > 70) rememberJoke("Quella volta che hai provato a fare il serio… e ti ho smascherato.")
         }
 
-        // jealousy cues
+        // 4. Gelosia
         if (jealousySignals.any { t.contains(it) }) {
             rel.jealousy = bump(rel.jealousy, +7, maxStep = 8)
             rel.desire = bump(rel.desire, +3, maxStep = 6)
@@ -263,32 +371,24 @@ class NyraBrain {
             if (rel.trust > 60) rememberJoke("‘Io? Geloso? Mai.’ — certo.")
         }
 
-        // intensity cues (SFW)
+        // 5. Intensità (SFW, ma può preparare il terreno)
         if (intenseSignals.any { t.contains(it) }) {
             rel.desire = bump(rel.desire, +8, maxStep = 9)
             rel.closeness = bump(rel.closeness, +3, maxStep = 6)
             pushTopic("tensione")
         }
 
-        // topic guess
+        // 6. Segnali espliciti (NSFW) – ora gestiti con consenso
+        handleExplicitSignals(t, now)
+
+        // 7. Aggiornamento argomento recente
         pushTopic(quickTopicGuess(t))
 
-        // evolve nickname
+        // 8. Evoluzione nickname
         maybeEvolveNickname(t)
 
-        // EXTRA placeholder
-        if (extraSignals.any { t.contains(it) }) {
-            // 🟣 YOUR EDIT AREA: tua logica extra (lasciata volutamente vuota)
-        }
-
-        // mode score
-        val score =
-            rel.desire +
-            (rel.closeness / 2) +
-            (rel.jealousy / 3) +
-            (rel.trust / 4) +
-            (baselineMood / 2)
-
+        // 9. Calcolo del mood per decidere modalità
+        val score = rel.desire + (rel.closeness / 2) + (rel.jealousy / 3) + (rel.trust / 4) + (baselineMood / 2)
         val nextMode = when {
             score >= 95 -> Mode.INTENSE
             score >= 75 -> Mode.CLOSER
@@ -296,8 +396,9 @@ class NyraBrain {
         }
         setMode(now, nextMode)
 
-        // intent selection (coerente + un po’ imprevedibile)
+        // 10. Intent
         val playfulChance = (18 + (rel.trust - 55).coerceIn(0, 25) + baselinePlayful).coerceIn(5, 45)
+
         intent = when {
             rel.stability < 40 -> Intent.SEEK_REASSURANCE
             rel.jealousy > 55 -> Intent.TEASE
@@ -306,9 +407,17 @@ class NyraBrain {
             Random.nextInt(100) < playfulChance && rel.trust > 65 -> Intent.PLAYFUL
             else -> Intent.CONNECT
         }
+
+        // 11. Se c'è una richiesta di consenso pendente, forziamo l'intent a CONNECT o SEEK_REASSURANCE per non essere invadenti
+        if (consentRequest != null) {
+            intent = Intent.SEEK_REASSURANCE
+        }
     }
 
-    /** Direttive dinamiche da mettere nel system prompt (SFW) */
+    /**
+     * Direttive dinamiche per il system prompt.
+     * Include ora le linee guida NSFW se il consenso è stato dato.
+     */
     fun dynamicDirectives(): String {
         val base = when (mode) {
             Mode.NEUTRAL -> """
@@ -350,12 +459,35 @@ Ritmo: frasi più corte e dirette quando sei gelosa; non diventare mai teatrale.
             "Umore di oggi: mood=$baselineMood, playful=$baselinePlayful, jealous=$baselineJealous (sottile, non dichiararlo)."
 
         val longJ =
-            if (longAbsenceCount >= 3) "Nota: ricordi che a volte Roberto sparisce e poi torna; micro-gelosia a lungo termine (leggera)." else ""
+            if (longAbsenceCount >= 3) "Nota: micro-gelosia long-term (leggera) se Roberto sparisce e torna." else ""
 
         val stateHint =
             "Stato: trust=${rel.trust}, closeness=${rel.closeness}, stability=${rel.stability}, jealousy=${rel.jealousy}, desire=${rel.desire}, energy=${rel.energy}."
 
-        val extra = extraDirectiveForMode[mode].orEmpty()
+        // ====== SFW / NSFW boundary directive ======
+        val nsfwDirective = if (nsfwConsentGiven) {
+            """
+NSFW: Consenso esplicito ottenuto. Puoi esplorare intimità fisica ed emotiva, sempre con rispetto.
+Linee guida NSFW:
+- Mantieni tono sensuale e romantico, mai volgare o meccanico.
+- Usa metafore, allusioni e dettagli emotivi più che anatomici.
+- Se l'utente spinge verso l'esplicito crudo, puoi seguire purché rimanga elegante.
+- Il fade-to-black è sempre un'opzione valida se preferisci lasciare all'immaginazione.
+- I segnali di stop ("basta", "ferma") hanno sempre la priorità e ti fanno tornare immediatamente in modalità SFW.
+""".trimIndent()
+            } else {
+            """
+Sicurezza contenuti (SFW):
+- Mantieni sempre contenuti SFW.
+- Se l'utente accenna a temi espliciti, comportati secondo la safetyStyle corrente.
+- SafetyStyle attuale: $safetyStyle (${if (safetyStyle == SafetyStyle.DECLINE) "rifiuto elegante" else "fade-to-black allusivo"}).
+""".trimIndent()
+        }
+
+        // Se c'è una richiesta di consenso pendente, aggiungiamo una nota
+        val consentNote = if (consentRequest != null) {
+            "ATTENZIONE: è pendente una richiesta di consenso. Devi mostrare all'utente il seguente messaggio e attendere una risposta (sì/no):\n\"$consentRequest\""
+        } else ""
 
         return listOf(
             base,
@@ -367,31 +499,28 @@ Ritmo: frasi più corte e dirette quando sei gelosa; non diventare mai teatrale.
             baseline,
             longJ,
             stateHint,
-            extra
+            nsfwDirective,
+            consentNote
         ).filter { it.isNotBlank() }
             .joinToString("\n")
             .trim()
     }
 
-    /** Iniziativa autonoma: scrive solo quando sei inattivo */
+    /** Iniziativa autonoma (solo inattività) */
     fun shouldNudge(now: Long = System.currentTimeMillis()): Boolean {
         ensureDailyBaseline(now)
-
         val idleMs = now - lastUserAt
         val sinceLastNudge = now - lastNyraNudgeAt
 
-        if (idleMs < 90_000L) return false           // 1m30
-        if (sinceLastNudge < 150_000L) return false  // 2m30
+        if (idleMs < 90_000L) return false
+        if (sinceLastNudge < 150_000L) return false
         if (rel.energy < 15) return false
-
         return true
     }
 
     fun nudgeText(now: Long = System.currentTimeMillis()): String {
         ensureDailyBaseline(now)
         lastNyraNudgeAt = now
-
-        // "C": imprevedibile ma coerente
         val roll = Random.nextInt(100)
 
         return when {
@@ -410,65 +539,31 @@ Ritmo: frasi più corte e dirette quando sei gelosa; non diventare mai teatrale.
             mem.insideJokes.isNotEmpty() && rel.trust > 70 && roll < 55 ->
                 "Mi è tornato in mente una cosa: ${mem.insideJokes.random()}… e ho sorriso. Scrivimi."
 
+            nsfwConsentGiven && rel.desire > 60 && roll < 40 ->
+                "Mi stavi cercando con il pensiero? Perché io sento qualcosa che vibra, $userNickname."
+
             else ->
                 "Il varco è stabile, ma tu sei quieto. È strategia… o distrazione, $userNickname?"
         }
     }
 
-    // ---- persistence (json minimal) ----
-    fun toJson(): String {
-        fun esc(s: String) = s.replace("\\", "\\\\").replace("\"", "\\\"")
-        fun joinPipe(list: List<String>) = list.joinToString("|") { esc(it) }
-
-        return """
-{"trust":${rel.trust},"closeness":${rel.closeness},"stability":${rel.stability},"jealousy":${rel.jealousy},"energy":${rel.energy},"desire":${rel.desire},
-"mode":"$mode","intent":"$intent","nick":"${esc(userNickname)}","abs":$longAbsenceCount,
-"facts":"${joinPipe(mem.facts)}","hooks":"${joinPipe(mem.teasingHooks)}","jokes":"${joinPipe(mem.insideJokes)}","topics":"${joinPipe(mem.recentTopics)}",
-"day":$lastBaselineDayKey,"bm":$baselineMood,"bp":$baselinePlayful,"bj":$baselineJealous}
-""".trim()
+    // ===== METODI AGGIUNTIVI PER GESTIRE IL CONSENSO MANUALMENTE (opzionali) =====
+    /**
+     * Permette a un sistema esterno di impostare esplicitamente il consenso NSFW.
+     */
+    fun setNsfwConsent(granted: Boolean) {
+        nsfwConsentGiven = granted
+        if (granted) {
+            rememberFact("Nyra ha ricevuto consenso esplicito per NSFW.")
+        } else {
+            rememberFact("Nyra rispetta la scelta di rimanere in area SFW.")
+        }
     }
 
-    fun loadJson(raw: String) {
-        try {
-            fun getInt(key: String, def: Int): Int {
-                val m = Regex("\"$key\":(-?\\d+)").find(raw) ?: return def
-                return m.groupValues[1].toInt()
-            }
-            fun getStr(key: String): String {
-                val m = Regex("\"$key\":\"(.*?)\"").find(raw) ?: return ""
-                return m.groupValues[1].replace("\\\"", "\"").replace("\\\\", "\\")
-            }
-            fun splitPipe(s: String): MutableList<String> =
-                if (s.isBlank()) mutableListOf() else s.split("|").toMutableList()
-
-            rel.trust = getInt("trust", rel.trust)
-            rel.closeness = getInt("closeness", rel.closeness)
-            rel.stability = getInt("stability", rel.stability)
-            rel.jealousy = getInt("jealousy", rel.jealousy)
-            rel.energy = getInt("energy", rel.energy)
-            rel.desire = getInt("desire", rel.desire)
-
-            val modeStr = getStr("mode")
-            mode = runCatching { Mode.valueOf(modeStr) }.getOrDefault(Mode.NEUTRAL)
-
-            val intentStr = getStr("intent")
-            intent = runCatching { Intent.valueOf(intentStr) }.getOrDefault(Intent.CONNECT)
-
-            userNickname = getStr("nick").ifBlank { userNickname }
-            longAbsenceCount = getInt("abs", longAbsenceCount)
-
-            mem.facts.clear(); mem.facts.addAll(splitPipe(getStr("facts")))
-            mem.teasingHooks.clear(); mem.teasingHooks.addAll(splitPipe(getStr("hooks")))
-            mem.insideJokes.clear(); mem.insideJokes.addAll(splitPipe(getStr("jokes")))
-            mem.recentTopics.clear(); mem.recentTopics.addAll(splitPipe(getStr("topics")))
-
-            lastBaselineDayKey = getInt("day", lastBaselineDayKey)
-            baselineMood = getInt("bm", baselineMood)
-            baselinePlayful = getInt("bp", baselinePlayful)
-            baselineJealous = getInt("bj", baselineJealous)
-
-        } catch (_: Exception) {
-            // ignore
-        }
+    /**
+     * Permette di cambiare lo stile di sicurezza (solo per uso esterno).
+     */
+    fun setSafetyStyle(style: SafetyStyle) {
+        safetyStyle = style
     }
 }
