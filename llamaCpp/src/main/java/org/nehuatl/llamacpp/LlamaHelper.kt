@@ -20,16 +20,13 @@ class LlamaHelper(
     private var completionJob: Job? = null
     private var currentContext: Int? = null
 
-    // stats / buffer
     private var tokenCount = 0
     private var allText = ""
 
     fun load(path: String, contextLength: Int, loaded: (Long) -> Unit) {
-        // release old
         currentContext?.let { id -> llama.releaseContext(id) }
         currentContext = null
 
-        // reset buffers
         tokenCount = 0
         allText = ""
 
@@ -52,11 +49,10 @@ class LlamaHelper(
 
         loadJob = scope.launch {
             try {
-                Log.d("LlamaHelper", ">>> start llama context with config: $config")
+                Log.d("LlamaHelper", ">>> will start llama context with config: $config")
 
+                // Callback globale: viene chiamata durante le generazioni
                 val result = llama.startEngine(config) {
-                    // During init some backends may emit text; ignore it or keep it.
-                    // We'll keep it but reset again before predict.
                     allText += it
                     tokenCount++
                     sharedFlow.tryEmit(LLMEvent.Ongoing(it, tokenCount))
@@ -64,8 +60,7 @@ class LlamaHelper(
 
                 if (result == null) throw Exception("initContext returned null - model initialization failed")
 
-                val id = result["contextId"]
-                    ?: throw Exception("contextId not found in result map: $result")
+                val id = result["contextId"] ?: throw Exception("contextId not found in result map: $result")
 
                 currentContext = when (id) {
                     is Int -> id
@@ -80,19 +75,13 @@ class LlamaHelper(
                 loaded(currentContext!!.toLong())
 
             } catch (e: Exception) {
-                Log.e("LlamaHelper", "Load failed", e)
+                Log.e("LlamaHelper", "Model load failed", e)
                 sharedFlow.tryEmit(LLMEvent.Error("Load failed: ${e.message ?: "unknown"}"))
                 try { pfd.close() } catch (_: Exception) {}
             }
         }
     }
 
-    /**
-     * Better defaults for chat on mobile:
-     * - lower temperature
-     * - repetition penalty
-     * - stop tokens for chat templates
-     */
     fun predict(
         prompt: String,
         partialCompletion: Boolean = true,
@@ -105,43 +94,35 @@ class LlamaHelper(
     ) {
         val context = currentContext ?: throw Exception("Model was not loaded yet, load it first")
 
-        // reset per-request buffer (IMPORTANT)
+        // Reset per richiesta (IMPORTANTISSIMO)
         tokenCount = 0
         allText = ""
 
         val startTime = System.currentTimeMillis()
-
         sharedFlow.tryEmit(LLMEvent.Started(prompt))
 
         completionJob = scope.launch {
             try {
-                // NOTE: keys are common llama.cpp-style; if a key isn't supported it is usually ignored.
-                val params = mutableMapOf<String, Any>(
-                    "prompt" to prompt,
-                    "emit_partial_completion" to partialCompletion,
-
-                    // sampling
-                    "temperature" to temperature,
-                    "top_p" to topP,
-                    "top_k" to topK,
-                    "repeat_penalty" to repeatPenalty,
-                    "repeat_last_n" to repeatLastN,
-
-                    // length control
-                    "n_predict" to maxTokens,
-
-                    // stop sequences (important for Qwen chat template)
-                    "stop" to listOf("<|im_end|>", "</s>")
-                )
-
                 llama.launchCompletion(
                     id = context,
-                    params = params
-                ) { tokenPiece ->
-                    allText += tokenPiece
-                    tokenCount++
-                    sharedFlow.tryEmit(LLMEvent.Ongoing(tokenPiece, tokenCount))
-                }
+                    params = mapOf(
+                        "prompt" to prompt,
+                        "emit_partial_completion" to partialCompletion,
+
+                        // sampling (riduce balbuzie/ripetizioni)
+                        "temperature" to temperature,
+                        "top_p" to topP,
+                        "top_k" to topK,
+                        "repeat_penalty" to repeatPenalty,
+                        "repeat_last_n" to repeatLastN,
+
+                        // limite risposta
+                        "n_predict" to maxTokens,
+
+                        // stop tokens (per template Qwen)
+                        "stop" to listOf("<|im_end|>", "</s>")
+                    )
+                )
 
                 val duration = System.currentTimeMillis() - startTime
                 sharedFlow.tryEmit(LLMEvent.Done(allText, tokenCount, duration))
@@ -167,9 +148,7 @@ class LlamaHelper(
 
     fun release() {
         currentContext?.let { id ->
-            try {
-                llama.releaseContext(id)
-            } catch (e: Exception) {
+            try { llama.releaseContext(id) } catch (e: Exception) {
                 Log.e("LlamaHelper", "releaseContext error", e)
             }
         }
