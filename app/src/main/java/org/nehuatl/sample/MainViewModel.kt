@@ -5,6 +5,7 @@ import android.util.Log
 import androidx.lifecycle.ViewModel
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -33,7 +34,7 @@ class MainViewModel(val contentResolver: ContentResolver) : ViewModel() {
     private val _generatedText = MutableStateFlow("")
     val generatedText = _generatedText.asStateFlow()
 
-    // ✅ Deve essere PUBLIC (così ChatScreen può leggere nickname/mode/intent se vuoi)
+    // Nyra brain (psicologia / direttive dinamiche)
     val nyra = NyraBrain()
 
     private val llamaHelper by lazy {
@@ -43,6 +44,9 @@ class MainViewModel(val contentResolver: ContentResolver) : ViewModel() {
             sharedFlow = _llmFlow,
         )
     }
+
+    // IMPORTANTISSIMO: job del collector eventi (evita collector infiniti)
+    private var eventsJob: Job? = null
 
     private val baseSystemPrompt = """
 Sei Nyra Veyl, una creatura draconica del mondo di Aetheryn.
@@ -105,9 +109,11 @@ $userMessage
         )
         _generatedText.value = ""
 
-        scope.launch {
-            llamaHelper.predict(formattedPrompt)
+        // Chiudi eventuale collector precedente (EVITA EVENTI DUPLICATI / RAM)
+        eventsJob?.cancel()
 
+        // Avvia collector nuovo
+        eventsJob = scope.launch {
             llmFlow.collect { event ->
                 when (event) {
                     is LlamaHelper.LLMEvent.Ongoing -> {
@@ -121,32 +127,46 @@ $userMessage
                             durationMs = event.duration
                         )
                         llamaHelper.stopPrediction()
-                        this.cancel()
+                        // chiudi questo collector
+                        eventsJob?.cancel()
                     }
 
                     is LlamaHelper.LLMEvent.Error -> {
                         _state.value = GenerationState.Error("Generation interrupted: ${event.message}")
                         llamaHelper.stopPrediction()
-                        this.cancel()
+                        // chiudi questo collector
+                        eventsJob?.cancel()
                     }
 
                     else -> {}
                 }
             }
         }
+
+        // Lancia prediction (se esplode, chiudi collector)
+        scope.launch {
+            try {
+                llamaHelper.predict(formattedPrompt)
+            } catch (e: Exception) {
+                _state.value = GenerationState.Error("Predict failed: ${e.message}", e)
+                eventsJob?.cancel()
+            }
+        }
     }
 
-    // ✅ Autonomia SEMPLICE: restituisce solo il testo nudge (la UI lo mostra e basta)
+    // Autonomia semplice: la UI può chiamarlo e mostrare il testo
     fun maybeNudge(): String? {
         return if (nyra.shouldNudge()) nyra.nudgeText() else null
     }
 
     fun abort() {
         llamaHelper.abort()
+        eventsJob?.cancel()
     }
 
     override fun onCleared() {
         super.onCleared()
+        eventsJob?.cancel()
         llamaHelper.abort()
         llamaHelper.release()
         viewModelJob.cancel()
